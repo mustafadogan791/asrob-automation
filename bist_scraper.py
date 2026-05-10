@@ -1,5 +1,5 @@
 import os
-import random
+import yfinance as yf
 from datetime import datetime
 from supabase import create_client, Client
 
@@ -12,7 +12,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Semboller
+# Semboller (5 endeks + 100 hisse)
 SYMBOLS = {
     'benchmarks': ['XU100', 'XU030', 'XBANK', 'XUSIN', 'XELKT'],
     'stocks': [
@@ -33,39 +33,65 @@ SYMBOLS = {
     ]
 }
 
+def fetch_real_bist_price(symbol):
+    """Gerçek BIST fiyatını Yahoo Finance'den çek"""
+    try:
+        # BIST sembolleri için .IS uzantısı (Istanbul Stock Exchange)
+        ticker = yf.Ticker(f"{symbol}.IS")
+        
+        # Son 2 günün verisini çek (bugün kapanış olmayabilir)
+        data = ticker.history(period="2d")
+        
+        if not data.empty:
+            # Son kapanış fiyatını al
+            close_price = round(data['Close'].iloc[-1], 2)
+            return close_price
+        else:
+            return None
+    except Exception as e:
+        print(f"⚠️ {symbol} Yahoo Finance hatası: {e}")
+        return None
+
 def fetch_bist_prices():
     """BIST fiyatlarını çek ve Supabase'e kaydet"""
     today = datetime.now().date().isoformat()
     
     print(f"\n{'='*60}")
-    print(f"🔄 BIST Fiyat Çekme Başlıyor")
+    print(f"🔄 BIST Fiyat Çekme Başlıyor (Yahoo Finance)")
     print(f"📅 Tarih: {today}")
     print(f"{'='*60}\n")
     
     all_symbols = SYMBOLS['benchmarks'] + SYMBOLS['stocks']
     success_count = 0
+    fail_count = 0
     
     for symbol in all_symbols:
         try:
-            # ŞİMDİLİK MOCK DATA (Gerçek BIST API ile değiştir)
-            mock_price = round(50 + random.random() * 100, 2)
+            # Gerçek fiyatı çek
+            real_price = fetch_real_bist_price(symbol)
             
-            # Supabase'e kaydet (upsert = varsa güncelle, yoksa ekle)
-            supabase.table('daily_prices').upsert({
-                'symbol': symbol,
-                'date': today,
-                'close_price': mock_price,
-                'source': 'bist'
-            }).execute()
-            
-            success_count += 1
-            print(f"✅ {symbol}: {mock_price} TL")
+            if real_price:
+                # Supabase'e kaydet
+                supabase.table('daily_prices').upsert({
+                    'symbol': symbol,
+                    'date': today,
+                    'close_price': real_price,
+                    'source': 'yahoo_finance'
+                }).execute()
+                
+                success_count += 1
+                print(f"✅ {symbol}: {real_price} TL")
+            else:
+                fail_count += 1
+                print(f"❌ {symbol}: Fiyat bulunamadı")
             
         except Exception as e:
+            fail_count += 1
             print(f"❌ {symbol} hatası: {e}")
     
     print(f"\n{'='*60}")
-    print(f"🎉 {success_count}/{len(all_symbols)} fiyat kaydedildi!")
+    print(f"🎉 {success_count}/{len(all_symbols)} başarılı")
+    print(f"❌ {fail_count} başarısız")
     print(f"{'='*60}\n")
 
 if __name__ == "__main__":
