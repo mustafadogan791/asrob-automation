@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
+
 from supabase import create_client
 from tradingview_ta import TA_Handler, Interval, Exchange
 
