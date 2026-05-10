@@ -1,0 +1,52 @@
+name: AsroB Automation
+
+on:
+  schedule:
+    # Her gün 15:30 UTC = 18:30 Türkiye
+    - cron: '30 15 * * *'
+    # Her gün 06:30 UTC = 09:30 Türkiye
+    - cron: '30 6 * * *'
+  workflow_dispatch: # Manuel test için
+
+jobs:
+  scraper:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 15 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run BIST Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python bist_scraper.py
+
+  scoring:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 6 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run Daily Scoring
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python daily_scoring.py
