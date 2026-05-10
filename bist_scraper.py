@@ -8,8 +8,6 @@ from supabase import create_client
 from tradingview_ta import TA_Handler, Interval, Exchange
 
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
