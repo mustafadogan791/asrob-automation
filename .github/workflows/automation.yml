@@ -2,16 +2,11 @@ name: AsroB Automation
 
 on:
   schedule:
-    # 15:30 UTC = 18:30 Türkiye (Fiyat çek + Poll oluştur + Bildirim gönder)
     - cron: '30 15 * * 1-5'
-    # 06:30 UTC = 09:30 Türkiye (Puanlama + Bildirim gönder)
     - cron: '30 6 * * 2-6'
-  workflow_dispatch: # Manuel test
+  workflow_dispatch:
 
 jobs:
-  # ============================================================
-  # 18:30 - BIST KAPANIŞI
-  # ============================================================
   market_close:
     runs-on: ubuntu-latest
     if: github.event.schedule == '30 15 * * 1-5' || github.event_name == 'workflow_dispatch'
@@ -22,23 +17,12 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Fetch BIST prices & create polls
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python bist_scraper.py
 
-      - name: Send market close notification
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
-        run: python send_notification.py --type market_close
-
-  # ============================================================
-  # 09:30 - BORSA AÇILIŞI
-  # ============================================================
   market_open:
     runs-on: ubuntu-latest
     if: github.event.schedule == '30 6 * * 2-6' || github.event_name == 'workflow_dispatch'
@@ -49,16 +33,8 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Process daily predictions & scoring
+      - name: Process scoring
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python daily_scoring.py
-
-      - name: Send results & notifications
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
-        run: python send_notification.py --type market_open
