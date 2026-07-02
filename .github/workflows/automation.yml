@@ -2,51 +2,63 @@ name: AsroB Automation
 
 on:
   schedule:
-    # Her gün 15:30 UTC = 18:30 Türkiye
-    - cron: '30 15 * * *'
-    # Her gün 06:30 UTC = 09:30 Türkiye
-    - cron: '30 6 * * *'
-  workflow_dispatch: # Manuel test için
+    # 15:30 UTC = 18:30 Türkiye (Fiyat çek + Poll oluştur + Bildirim gönder)
+    - cron: '30 15 * * 1-5'
+    # 06:30 UTC = 09:30 Türkiye (Puanlama + Bildirim gönder)
+    - cron: '30 6 * * 2-6'
+  workflow_dispatch: # Manuel test
 
 jobs:
-  scraper:
+  # ============================================================
+  # 18:30 - BIST KAPANIŞI
+  # ============================================================
+  market_close:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 15 * * *' || github.event_name == 'workflow_dispatch'
+    if: github.event.schedule == '30 15 * * 1-5' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
       - name: Install dependencies
         run: pip install -r requirements.txt
-      
-      - name: Run BIST Scraper
+
+      - name: Fetch BIST prices & create polls
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python bist_scraper.py
 
-  scoring:
+      - name: Send market close notification
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
+        run: python send_notification.py --type market_close
+
+  # ============================================================
+  # 09:30 - BORSA AÇILIŞI
+  # ============================================================
+  market_open:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 6 * * *' || github.event_name == 'workflow_dispatch'
+    if: github.event.schedule == '30 6 * * 2-6' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
       - name: Install dependencies
         run: pip install -r requirements.txt
-      
-      - name: Run Daily Scoring
+
+      - name: Process daily predictions & scoring
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python daily_scoring.py
+
+      - name: Send results & notifications
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
+        run: python send_notification.py --type market_open
