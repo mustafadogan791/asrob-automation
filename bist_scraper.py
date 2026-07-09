@@ -135,12 +135,12 @@ def main():
     for symbol in all_symbols:
         price = fetch_price(symbol)
         if price:
-            supabase.table('daily_prices').upsert({
+  supabase.table('daily_prices').upsert({
                 'symbol': symbol,
                 'date': today_str,
                 'close_price': price,
                 'source': 'yahoo_finance',
-            }).execute()
+            }, on_conflict='symbol,date').execute()
             success += 1
             print(f"  ✅ {symbol}: {price:.2f} TL")
         else:
