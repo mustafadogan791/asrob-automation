@@ -124,10 +124,8 @@ def main():
     print(f"🔄 BIST Fiyat Çekme - {today_str}")
     print(f"{'='*60}\n")
 
-    # 1. Bugünün poll'larını oluştur (yoksa)
     create_daily_polls(today_str)
 
-    # 2. Fiyatları çek
     all_symbols = BENCHMARKS + STOCKS
     success = 0
     fail = 0
@@ -135,7 +133,7 @@ def main():
     for symbol in all_symbols:
         price = fetch_price(symbol)
         if price:
-  supabase.table('daily_prices').upsert({
+            supabase.table('daily_prices').upsert({
                 'symbol': symbol,
                 'date': today_str,
                 'close_price': price,
