@@ -1,11 +1,9 @@
 name: AsroB Automation
-
 on:
   schedule:
     - cron: '30 15 * * 1-5'
     - cron: '30 6 * * 2-6'
   workflow_dispatch:
-
 jobs:
   market_close:
     runs-on: ubuntu-latest
@@ -22,7 +20,14 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python bist_scraper.py
-
+      - name: Write Firebase credentials
+        run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
+      - name: Send market close notification
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
+        run: python send_notification.py --type market_close
   market_open:
     runs-on: ubuntu-latest
     if: github.event.schedule == '30 6 * * 2-6' || github.event_name == 'workflow_dispatch'
@@ -38,3 +43,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python daily_scoring.py
+      - name: Write Firebase credentials
+        run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
+      - name: Send market open notification
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
+        run: python send_notification.py --type market_open
