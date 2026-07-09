@@ -1,146 +1,120 @@
 """
 send_notification.py
-Firebase Cloud Messaging ile push bildirimi gönderir.
+Firebase Cloud Messaging ile push bildirimi gönderir (firebase-admin SDK).
 GitHub Actions tarafından çağrılır.
 
 Kullanım:
   python send_notification.py --type market_close
   python send_notification.py --type market_open
-  python send_notification.py --type streak_warning --user_id <id>
+  python send_notification.py --type streak_warning
 """
 
 import os
-import sys
 import argparse
-import requests
+from datetime import date
 from supabase import create_client, Client
+import firebase_admin
+from firebase_admin import credentials, messaging
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY")  # Firebase Console > Proje Ayarları > Cloud Messaging
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-credentials.json")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise Exception("Supabase bilgileri eksik!")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ============================================================
-# FCM GÖNDERME
-# ============================================================
+if not firebase_admin._apps:
+    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
+    firebase_admin.initialize_app(cred)
+
 
 def send_fcm(token: str, title: str, body: str, data: dict = None):
-    """Tek bir cihaza FCM bildirimi gönder"""
-    if not FCM_SERVER_KEY:
-        print("⚠️  FCM_SERVER_KEY bulunamadı, bildirim gönderilemedi")
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            data={k: str(v) for k, v in (data or {}).items()},
+            token=token,
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(channel_id="asrob_main", sound="default"),
+            ),
+        )
+        messaging.send(message)
+        return True
+    except Exception as e:
+        print(f"Gonderim hatasi ({token[:12]}...): {e}")
         return False
-
-    payload = {
-        "to": token,
-        "notification": {
-            "title": title,
-            "body": body,
-            "sound": "default",
-        },
-        "data": data or {},
-        "android": {
-            "priority": "high",
-            "notification": {"channel_id": "asrob_main"},
-        },
-    }
-
-    response = requests.post(
-        "https://fcm.googleapis.com/fcm/send",
-        json=payload,
-        headers={
-            "Authorization": f"key={FCM_SERVER_KEY}",
-            "Content-Type": "application/json",
-        },
-        timeout=10,
-    )
-    return response.status_code == 200
 
 
 def send_to_topic(topic: str, title: str, body: str):
-    """Bir topic'e abone tüm kullanıcılara gönder"""
-    if not FCM_SERVER_KEY:
-        print("⚠️  FCM_SERVER_KEY bulunamadı")
-        return
+    try:
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            topic=topic,
+        )
+        messaging.send(message)
+        print(f"Topic bildirimi gonderildi: {topic}")
+    except Exception as e:
+        print(f"Topic gonderim hatasi: {e}")
 
-    payload = {
-        "to": f"/topics/{topic}",
-        "notification": {"title": title, "body": body, "sound": "default"},
-    }
-    requests.post(
-        "https://fcm.googleapis.com/fcm/send",
-        json=payload,
-        headers={"Authorization": f"key={FCM_SERVER_KEY}", "Content-Type": "application/json"},
-        timeout=10,
-    )
-
-
-# ============================================================
-# BİLDİRİM TÜRLERİ
-# ============================================================
 
 def notify_market_close():
-    """18:30 - Borsa kapandı, oylama açıldı"""
-    print("📲 Piyasa kapanış bildirimleri gönderiliyor...")
-
-    # Tüm kullanıcılara (topic ile)
+    print("Piyasa kapanis bildirimleri gonderiliyor...")
     send_to_topic(
         "all_users",
-        "📊 Oylama Açıldı! 🔔",
-        "Borsa kapandı. Yarın için tahminini yap ve lider tablosunda yüksel!",
+        "Oylama Acildi!",
+        "Borsa kapandi. Yarin icin tahminini yap ve lider tablosunda yuksel!",
     )
-    print("✅ Kapanış bildirimi gönderildi")
+    print("Kapanis bildirimi gonderildi")
 
 
 def notify_market_open():
-    """09:30 - Borsa açıldı, puanlar hesaplandı"""
-    print("📲 Piyasa açılış bildirimleri gönderiliyor...")
+    print("Piyasa acilis bildirimleri gonderiliyor...")
 
-    # Tüm kullanıcılara genel bildirim
     send_to_topic(
         "all_users",
-        "🔔 Borsa Açıldı! Oylama Kapandı",
-        "Tahmin sonuçların hesaplandı. Puanlarını kontrol et!",
+        "Borsa Acildi! Oylama Kapandi",
+        "Tahmin sonuclarin hesaplandi. Puanlarini kontrol et!",
     )
 
-    # Bireysel bildirimler: doğru tahmin sayısı + streak uyarısı
     try:
         users = supabase.table("users").select("id, fcm_token, username, current_streak").not_.is_("fcm_token", "null").execute()
 
+        sent_count = 0
         for user in users.data:
             token = user.get("fcm_token")
             if not token:
                 continue
 
             user_id = user["id"]
-            username = user.get("username", "Kullanıcı")
+            username = user.get("username", "Kullanici")
             streak = user.get("current_streak", 0)
 
-            # Bugün kaç doğru tahmin?
-            from datetime import date
             today = date.today().isoformat()
             correct = supabase.table("prediction_results").select("id").eq("user_id", user_id).eq("result_date", today).eq("is_correct", True).execute()
             correct_count = len(correct.data) if correct.data else 0
 
             if correct_count > 0:
-                send_fcm(
+                success = send_fcm(
                     token,
-                    f"🎯 {correct_count} Doğru Tahmin!",
-                    f"Harika gün {username}! {correct_count} tahminin doğru çıktı. {'🔥' * min(streak, 4)} Seri: {streak}",
+                    f"{correct_count} Dogru Tahmin!",
+                    f"Harika gun {username}! {correct_count} tahminin dogru cikti. Seri: {streak}",
                 )
+                if success:
+                    sent_count += 1
 
-        print("✅ Bireysel bildirimler gönderildi")
+        print(f"{sent_count} bireysel bildirim gonderildi")
 
     except Exception as e:
-        print(f"❌ Bireysel bildirim hatası: {e}")
+        print(f"Bireysel bildirim hatasi: {e}")
 
 
 def notify_streak_warnings():
-    """Streak kırılmak üzere olan kullanıcılara uyarı (opsiyonel, gün içi çalışabilir)"""
     try:
         users = supabase.table("users").select("id, fcm_token, username, current_streak").gt("current_streak", 2).not_.is_("fcm_token", "null").execute()
 
-        from datetime import date
         today = date.today().isoformat()
         count = 0
 
@@ -149,28 +123,24 @@ def notify_streak_warnings():
             if not token:
                 continue
 
-            # Bugün oy vermiş mi?
             voted = supabase.table("votes").select("id").eq("user_id", user["id"]).gte("created_at", f"{today}T00:00:00").execute()
 
             if not voted.data:
                 streak = user.get("current_streak", 0)
                 username = user.get("username", "")
-                send_fcm(
+                success = send_fcm(
                     token,
-                    "⚠️ Streakini Kaybedeceksin!",
-                    f"{username}, {streak} günlük seriniz tehlikede! Hemen tahminini yap 🔥",
+                    "Streakini Kaybedeceksin!",
+                    f"{username}, {streak} gunluk seriniz tehlikede! Hemen tahminini yap",
                 )
-                count += 1
+                if success:
+                    count += 1
 
-        print(f"✅ {count} streak uyarısı gönderildi")
+        print(f"{count} streak uyarisi gonderildi")
 
     except Exception as e:
-        print(f"❌ Streak uyarı hatası: {e}")
+        print(f"Streak uyari hatasi: {e}")
 
-
-# ============================================================
-# ANA
-# ============================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
