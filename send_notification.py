@@ -12,9 +12,12 @@ Kullanım:
 import os
 import argparse
 from datetime import date
+from dotenv import load_dotenv
 from supabase import create_client, Client
 import firebase_admin
 from firebase_admin import credentials, messaging
+
+load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
