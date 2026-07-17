@@ -251,6 +251,8 @@ def process_daily_predictions():
             processed_count += 1
         
         supabase.rpc('update_user_scores').execute()
+        supabase.rpc('refresh_stats_and_badges').execute()
+       
         
         print(f"\n{'='*60}")
         print(f"🎉 {processed_count} tahmin işlendi!")
