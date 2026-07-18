@@ -1,13 +1,29 @@
 name: AsroB Automation
+
 on:
   schedule:
+    # Türkiye saati: hafta içi 09:30, 18:25 ve 18:30 (UTC+3)
+    - cron: '30 6 * * 1-5'
+    - cron: '25 15 * * 1-5'
     - cron: '30 15 * * 1-5'
-    - cron: '30 6 * * 2-6'
   workflow_dispatch:
+    inputs:
+      task:
+        description: Elle çalıştırılacak güvenli otomasyon adımı
+        required: true
+        default: settlement
+        type: choice
+        options:
+          - voting_close
+          - settlement
+          - poll_opening
+
 jobs:
-  market_close:
+  voting_close:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 15 * * 1-5' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event.schedule == '30 6 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'voting_close')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,22 +31,20 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Fetch BIST prices & create polls
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python bist_scraper.py
       - name: Write Firebase credentials
         run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
-      - name: Send market close notification
+      - name: Send voting closed notification
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
-        run: python send_notification.py --type market_close
-  market_open:
+        run: python send_notification.py --type market_open
+
+  settlement:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '30 6 * * 2-6' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event.schedule == '25 15 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'settlement')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,16 +52,47 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Process scoring
+      - name: Fetch today's BIST closing prices
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python bist_scraper.py --mode prices
+      - name: Score today's locked predictions
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python daily_scoring.py
       - name: Write Firebase credentials
         run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
-      - name: Send market open notification
+      - name: Send result notifications
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
-        run: python send_notification.py --type market_open
+        run: python send_notification.py --type results_ready
+
+  poll_opening:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.schedule == '30 15 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'poll_opening')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Create next business day's polls
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python bist_scraper.py --mode polls
+      - name: Write Firebase credentials
+        run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
+      - name: Send new poll notifications
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
+        run: python send_notification.py --type poll_opened

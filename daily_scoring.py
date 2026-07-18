@@ -1,5 +1,7 @@
+import argparse
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from supabase import create_client, Client
 
 # Environment Variables
@@ -10,6 +12,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise Exception("❌ Supabase credentials bulunamadı!")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+ISTANBUL_TZ = ZoneInfo('Europe/Istanbul')
 
 def calculate_actual_result(change_percent):
     """Fiyat değişimine göre sonucu belirle"""
@@ -150,27 +153,22 @@ def update_user_streak(user_id, is_correct, prediction_date):
     except Exception as e:
         print(f"❌ Update streak error: {e}")
 
-def process_daily_predictions():
-    """Günlük tahminleri işle ve puanla"""
-    
-    target_date = datetime.now()
-    prediction_date = target_date - timedelta(days=1)
-    prediction_date_str = prediction_date.date().isoformat()
-    target_date_str = target_date.date().isoformat()
+def process_daily_predictions(result_date=None):
+    """Hedef işlem gününün kapanmış anketlerini idempotent biçimde puanla."""
+    target_day = result_date or datetime.now(ISTANBUL_TZ).date()
+    target_date = datetime.combine(target_day, datetime.min.time())
+    target_date_str = target_day.isoformat()
     
     print(f"\n{'='*60}")
     print(f"🎯 Günlük Puanlama Başlıyor")
-    print(f"📅 Tahmin Günü: {prediction_date_str}")
-    print(f"📅 Sonuç Günü: {target_date_str}")
+    print(f"📅 Sonuçlandırılacak Anket Günü: {target_date_str}")
     print(f"{'='*60}\n")
     
     try:
         votes_response = supabase.table('votes').select(
-            '*, polls!inner(symbol, id)'
-        ).gte(
-            'created_at', f'{prediction_date_str}T00:00:00'
-        ).lt(
-            'created_at', f'{prediction_date_str}T23:59:59'
+            '*, polls!inner(symbol, id, date)'
+        ).eq(
+            'polls.date', target_date_str
         ).not_.is_('user_id', 'null').execute()
         
         votes = votes_response.data if votes_response.data else []
@@ -178,27 +176,60 @@ def process_daily_predictions():
         print(f"✅ {len(votes)} tahmin bulundu")
         
         processed_count = 0
+        skipped_count = 0
+
+        existing_response = supabase.table('prediction_results').select(
+            'user_id, poll_id'
+        ).eq('result_date', target_date_str).execute()
+        existing_results = {
+            (row['user_id'], row['poll_id'])
+            for row in (existing_response.data or [])
+        }
+
+        vote_distributions = {}
+        for vote in votes:
+            poll_id = vote['polls']['id']
+            distribution = vote_distributions.setdefault(
+                poll_id,
+                {'positive': 0, 'neutral': 0, 'negative': 0},
+            )
+            distribution[vote['vote_type']] += 1
         
         for vote in votes:
             symbol = vote['polls']['symbol']
             user_id = vote['user_id']
             poll_id = vote['polls']['id']
             vote_type = vote['vote_type']
-            
+
+            if (user_id, poll_id) in existing_results:
+                print(f"⏭️  {symbol}: Bu tahmin daha önce puanlandı")
+                skipped_count += 1
+                continue
+
             prev_price_response = supabase.table('daily_prices').select(
-                'close_price'
-            ).eq('symbol', symbol).eq('date', prediction_date_str).single().execute()
+                'close_price, date'
+            ).eq(
+                'symbol', symbol
+            ).lt(
+                'date', target_date_str
+            ).order(
+                'date', desc=True
+            ).limit(1).execute()
             
             current_price_response = supabase.table('daily_prices').select(
                 'close_price'
-            ).eq('symbol', symbol).eq('date', target_date_str).single().execute()
-            
+            ).eq('symbol', symbol).eq('date', target_date_str).limit(1).execute()
+
             if not prev_price_response.data or not current_price_response.data:
                 print(f"⚠️ {symbol} için fiyat bulunamadı")
+                skipped_count += 1
                 continue
-            
-            prev_price = float(prev_price_response.data['close_price'])
-            current_price = float(current_price_response.data['close_price'])
+
+            previous_price_row = prev_price_response.data[0]
+            current_price_row = current_price_response.data[0]
+            prediction_date_str = previous_price_row['date']
+            prev_price = float(previous_price_row['close_price'])
+            current_price = float(current_price_row['close_price'])
             
             change_percent = ((current_price - prev_price) / prev_price) * 100
             actual_result = calculate_actual_result(change_percent)
@@ -207,13 +238,7 @@ def process_daily_predictions():
             
             current_streak = get_user_streak(user_id)
             
-            vote_dist_response = supabase.table('votes').select(
-                'vote_type'
-            ).eq('poll_id', poll_id).execute()
-            
-            vote_distribution = {'positive': 0, 'neutral': 0, 'negative': 0}
-            for v in vote_dist_response.data:
-                vote_distribution[v['vote_type']] += 1
+            vote_distribution = vote_distributions[poll_id]
             
             points = calculate_hybrid_points(
                 vote_type, actual_result, vote_distribution, 
@@ -244,18 +269,20 @@ def process_daily_predictions():
                 'streak_at_prediction': current_streak,
                 'vote_distribution': vote_distribution
             }).execute()
+            existing_results.add((user_id, poll_id))
             
             update_user_streak(user_id, is_correct, target_date)
             
             print(f"✅ {symbol}: {vote_type} vs {actual_result} = {points} pts")
             processed_count += 1
         
-        supabase.rpc('update_user_scores').execute()
-        supabase.rpc('refresh_stats_and_badges').execute()
+        if processed_count > 0:
+            supabase.rpc('update_user_scores').execute()
+            supabase.rpc('refresh_stats_and_badges').execute()
        
         
         print(f"\n{'='*60}")
-        print(f"🎉 {processed_count} tahmin işlendi!")
+        print(f"🎉 {processed_count} tahmin işlendi, {skipped_count} tahmin atlandı!")
         print(f"{'='*60}\n")
         
     except Exception as e:
@@ -264,4 +291,11 @@ def process_daily_predictions():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    process_daily_predictions()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--date',
+        help='Test için sonuç tarihi (YYYY-MM-DD); varsayılan İstanbul bugünü.',
+    )
+    args = parser.parse_args()
+    result_date = datetime.fromisoformat(args.date).date() if args.date else None
+    process_daily_predictions(result_date)

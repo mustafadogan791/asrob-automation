@@ -5,12 +5,14 @@ BIST hisselerini Bigpara'dan (Yahoo yedekli), endeksleri Yahoo Finance'den
 çekip Supabase'e kaydeder.
 """
 
+import argparse
 import os
 from typing import Any
 
 import requests
 import yfinance as yf
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from supabase import create_client, Client
 
 # Supabase
@@ -36,6 +38,8 @@ http.headers.update({
         '(KHTML, like Gecko) Chrome/126.0 Safari/537.36'
     ),
 })
+
+ISTANBUL_TZ = ZoneInfo('Europe/Istanbul')
 
 # ============================================================
 # SEMBOLLER
@@ -203,15 +207,19 @@ def create_daily_polls(date_str: str):
 # ANA FONKSIYON
 # ============================================================
 
-def main():
-    today = datetime.now().date()
-    today_str = today.isoformat()
+def next_business_day(day):
+    """Resmi tatiller hariç bir sonraki hafta içini döndür."""
+    candidate = day + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
 
+
+def fetch_and_store_prices(date_str: str):
+    """Kapanış fiyatlarını çek ve günlük fiyat tablosuna kaydet."""
     print(f"\n{'='*60}")
-    print(f"🔄 BIST Fiyat Çekme - {today_str}")
+    print(f"🔄 BIST Kapanış Fiyatları - {date_str}")
     print(f"{'='*60}\n")
-
-    create_daily_polls(today_str)
 
     all_symbols = (
         [(symbol, 'benchmark') for symbol in BENCHMARKS]
@@ -225,7 +233,7 @@ def main():
         if price:
             supabase.table('daily_prices').upsert({
                 'symbol': symbol,
-                'date': today_str,
+                'date': date_str,
                 'close_price': price,
                 'source': source,
             }, on_conflict='symbol,date').execute()
@@ -235,9 +243,30 @@ def main():
             fail += 1
             print(f"  ❌ {symbol}: Fiyat bulunamadı")
 
-    print(f"\n{'='*60}")
-    print(f"🎉 Tamamlandı: {success} başarılı, {fail} başarısız")
-    print(f"{'='*60}\n")
+    print(f"\n🎉 Fiyat çekme tamamlandı: {success} başarılı, {fail} başarısız")
+    if success == 0:
+        raise RuntimeError('Hiçbir kapanış fiyatı alınamadı; puanlama durduruldu.')
+
+
+def main(mode: str):
+    today = datetime.now(ISTANBUL_TZ).date()
+    today_str = today.isoformat()
+
+    if mode in ('prices', 'all'):
+        fetch_and_store_prices(today_str)
+
+    if mode in ('polls', 'all'):
+        poll_date = next_business_day(today)
+        create_daily_polls(poll_date.isoformat())
+        print(f"✅ {poll_date.isoformat()} işlem günü anketleri hazır")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--mode',
+        choices=['prices', 'polls', 'all'],
+        default='all',
+        help='18:25 prices, 18:30 polls; all yalnızca elle test içindir.',
+    )
+    args = parser.parse_args()
+    main(args.mode)

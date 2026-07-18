@@ -4,3 +4,4 @@ beautifulsoup4>=4.12.0
 lxml>=5.1.0
 yfinance>=0.2.49
 firebase-admin
+python-dotenv>=1.0.0
