@@ -1,10 +1,14 @@
 """
 bist_scraper.py
 GitHub Actions ile her gün 18:30 Türkiye saatinde (15:30 UTC) çalışır.
-Yahoo Finance'den BIST fiyatlarını çekip Supabase'e kaydeder.
+BIST hisselerini Bigpara'dan (Yahoo yedekli), endeksleri Yahoo Finance'den
+çekip Supabase'e kaydeder.
 """
 
 import os
+from typing import Any
+
+import requests
 import yfinance as yf
 from datetime import datetime, timedelta
 from supabase import create_client, Client
@@ -17,6 +21,21 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise Exception("❌ Supabase credentials bulunamadı!")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+BIGPARA_DETAIL_URL = (
+    "https://bigpara.hurriyet.com.tr/api/v1/borsa/hisseyuzeysel/{symbol}"
+)
+HTTP_TIMEOUT_SECONDS = 15
+
+http = requests.Session()
+http.headers.update({
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': 'https://bigpara.hurriyet.com.tr/borsa/hisse-fiyatlari/',
+    'User-Agent': (
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+    ),
+})
 
 # ============================================================
 # SEMBOLLER
@@ -43,11 +62,66 @@ STOCKS = [
 ]
 
 # ============================================================
-# FİYAT ÇEKME (Yahoo Finance)
+# FİYAT ÇEKME (Bigpara + Yahoo yedeği)
 # ============================================================
 
-def fetch_price(symbol: str) -> float | None:
-    """Yahoo Finance'den kapanış fiyatı çek. .IS = Istanbul Stock Exchange"""
+def _to_float(value: Any) -> float | None:
+    """Bigpara'nın sayı/string değerlerini güvenli biçimde float'a çevir."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip().replace(' ', '')
+    if not normalized:
+        return None
+    if ',' in normalized:
+        normalized = normalized.replace('.', '').replace(',', '.')
+
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def _find_bigpara_close(value: Any, symbol: str) -> float | None:
+    """Bigpara yanıtındaki kapanış değerini şema değişikliklerine toleranslı bul."""
+    if isinstance(value, dict):
+        response_symbol = str(value.get('sembol', '')).upper()
+        if not response_symbol or response_symbol == symbol:
+            for key in ('kapanis', 'son', 'fiyat'):
+                price = _to_float(value.get(key))
+                if price is not None and price > 0:
+                    return price
+        for child in value.values():
+            price = _find_bigpara_close(child, symbol)
+            if price is not None:
+                return price
+    elif isinstance(value, list):
+        for child in value:
+            price = _find_bigpara_close(child, symbol)
+            if price is not None:
+                return price
+    return None
+
+
+def fetch_bigpara_price(symbol: str) -> float | None:
+    """Bigpara yüzeysel hisse servisinden son/kapanış fiyatını çek."""
+    try:
+        response = http.get(
+            BIGPARA_DETAIL_URL.format(symbol=symbol),
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        price = _find_bigpara_close(response.json(), symbol)
+        return round(price, 4) if price is not None else None
+    except (requests.RequestException, ValueError) as exc:
+        print(f"  ⚠️  {symbol}: Bigpara erişilemedi ({exc})")
+        return None
+
+
+def fetch_yahoo_price(symbol: str) -> float | None:
+    """Yahoo Finance'den kapanış fiyatı çek. .IS = Istanbul Stock Exchange."""
     try:
         ticker = yf.Ticker(f"{symbol}.IS")
         hist = ticker.history(period="2d")
@@ -58,6 +132,19 @@ def fetch_price(symbol: str) -> float | None:
     except Exception as e:
         print(f"  ⚠️  {symbol}: {e}")
         return None
+
+
+def fetch_price(symbol: str, kind: str) -> tuple[float | None, str | None]:
+    """Hisselerde Bigpara'yı, başarısızsa Yahoo'yu; endekslerde Yahoo'yu kullan."""
+    if kind == 'stock':
+        bigpara_price = fetch_bigpara_price(symbol)
+        if bigpara_price is not None:
+            return bigpara_price, 'bigpara'
+
+    yahoo_price = fetch_yahoo_price(symbol)
+    if yahoo_price is not None:
+        return yahoo_price, 'yahoo_finance'
+    return None, None
 
 # ============================================================
 # POLL OLUŞTURMA (Her gün yeni poll'lar)
@@ -126,18 +213,21 @@ def main():
 
     create_daily_polls(today_str)
 
-    all_symbols = BENCHMARKS + STOCKS
+    all_symbols = (
+        [(symbol, 'benchmark') for symbol in BENCHMARKS]
+        + [(symbol, 'stock') for symbol in STOCKS]
+    )
     success = 0
     fail = 0
 
-    for symbol in all_symbols:
-        price = fetch_price(symbol)
+    for symbol, kind in all_symbols:
+        price, source = fetch_price(symbol, kind)
         if price:
             supabase.table('daily_prices').upsert({
                 'symbol': symbol,
                 'date': today_str,
                 'close_price': price,
-                'source': 'yahoo_finance',
+                'source': source,
             }, on_conflict='symbol,date').execute()
             success += 1
             print(f"  ✅ {symbol}: {price:.2f} TL")
