@@ -36,7 +36,7 @@ jobs:
       - name: Send voting closed notification
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
         run: python send_notification.py --type market_open
 
@@ -55,19 +55,19 @@ jobs:
       - name: Fetch today's BIST closing prices
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python bist_scraper.py --mode prices
       - name: Score today's locked predictions
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python daily_scoring.py
       - name: Write Firebase credentials
         run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
       - name: Send result notifications
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
         run: python send_notification.py --type results_ready
 
@@ -86,13 +86,13 @@ jobs:
       - name: Create next business day's polls
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python bist_scraper.py --mode polls
       - name: Write Firebase credentials
         run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
       - name: Send new poll notifications
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
         run: python send_notification.py --type poll_opened
