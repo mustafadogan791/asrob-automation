@@ -3,6 +3,15 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from supabase import create_client, Client
+from scoring_rules import (
+    StreakState,
+    accuracy_level,
+    actual_result,
+    change_multiplier,
+    difficulty_multiplier,
+    hybrid_points,
+    streak_multiplier,
+)
 
 # Environment Variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -13,145 +22,77 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ISTANBUL_TZ = ZoneInfo('Europe/Istanbul')
+SCORING_V2_START_DATE = os.getenv('SCORING_V2_START_DATE', '2026-07-20')
 
 def calculate_actual_result(change_percent):
     """Fiyat değişimine göre sonucu belirle"""
-    if change_percent > 1.0:
-        return 'positive'
-    elif change_percent < -1.0:
-        return 'negative'
-    else:
-        return 'neutral'
+    return actual_result(change_percent)
 
 def calculate_accuracy_level(prediction, actual):
     """Tahmin doğruluğunu hesapla"""
-    if prediction == actual:
-        return 'exact'
-    
-    partial_cases = [
-        ('positive', 'neutral'), ('neutral', 'positive'),
-        ('negative', 'neutral'), ('neutral', 'negative')
-    ]
-    
-    if (prediction, actual) in partial_cases:
-        return 'partial'
-    
-    return 'wrong'
+    return accuracy_level(prediction, actual)
 
-def calculate_difficulty_multiplier(vote_distribution):
+def calculate_difficulty_multiplier(vote_distribution, prediction):
     """Zorluk katsayısı"""
-    total = sum(vote_distribution.values())
-    if total == 0:
-        return 1.0
-    
-    max_votes = max(vote_distribution.values())
-    max_percentage = max_votes / total
-    difficulty = 1.0 + (1.0 - max_percentage)
-    return round(difficulty, 2)
+    return difficulty_multiplier(vote_distribution, prediction)
 
-def calculate_change_multiplier(change_percent):
+def calculate_change_multiplier(change_percent, actual):
     """Değişim bonusu"""
-    change_abs = abs(change_percent)
-    
-    if change_abs < 1.0:
-        return 0.5
-    elif change_abs < 2.0:
-        return 0.8
-    elif change_abs < 5.0:
-        return 1.0
-    elif change_abs < 10.0:
-        return 1.3
-    else:
-        return 1.5
+    return change_multiplier(change_percent, actual)
 
 def calculate_streak_multiplier(streak):
     """Streak bonusu"""
-    if streak < 2:
-        return 1.0
-    elif streak <= 3:
-        return 1.2
-    elif streak <= 6:
-        return 1.5
-    elif streak <= 9:
-        return 1.8
-    else:
-        return 2.5
+    return streak_multiplier(streak)
 
 def calculate_hybrid_points(prediction, actual, vote_distribution, change_percent, current_streak):
     """Hibrit puan hesaplama"""
-    accuracy = calculate_accuracy_level(prediction, actual)
-    if accuracy == 'wrong':
-        return 0
-    
-    base_points = 10.0
-    difficulty_mult = calculate_difficulty_multiplier(vote_distribution)
-    change_mult = calculate_change_multiplier(change_percent)
-    streak_mult = calculate_streak_multiplier(current_streak)
-    
-    effective_streak_mult = streak_mult if accuracy == 'exact' else 1.0
-    total_points = base_points * difficulty_mult * change_mult * effective_streak_mult
-    
-    return round(total_points)
+    return hybrid_points(
+        prediction,
+        actual,
+        vote_distribution,
+        change_percent,
+        current_streak,
+    )
 
-def get_user_streak(user_id):
-    """Kullanıcının mevcut streak'ini al"""
-    try:
-        result = supabase.table('users').select('current_streak, last_prediction_date').eq('id', user_id).single().execute()
-        
-        if not result.data:
-            return 0
-        
-        current_streak = result.data.get('current_streak', 0)
-        last_date_str = result.data.get('last_prediction_date')
-        
-        if not last_date_str:
-            return 0
-        
-        last_date = datetime.fromisoformat(last_date_str).date()
-        today = datetime.now().date()
-        days_diff = (today - last_date).days
-        
-        if days_diff > 1:
-            return 0
-        
-        return current_streak
-    except:
-        return 0
+def load_streak_states():
+    """Geçmiş sonuçlardan 10'luk blok serilerini idempotent biçimde kur."""
+    states = {}
+    page_size = 1000
+    start = 0
 
-def update_user_streak(user_id, is_correct, prediction_date):
-    """Kullanıcının streak'ini güncelle"""
-    try:
-        result = supabase.table('users').select('current_streak, best_streak, last_prediction_date').eq('id', user_id).single().execute()
-        
-        current_streak = result.data.get('current_streak', 0) if result.data else 0
-        best_streak = result.data.get('best_streak', 0) if result.data else 0
-        last_date_str = result.data.get('last_prediction_date') if result.data else None
-        
-        if is_correct:
-            if last_date_str:
-                last_date = datetime.fromisoformat(last_date_str).date()
-                days_diff = (prediction_date.date() - last_date).days
-                
-                if days_diff <= 1:
-                    current_streak += 1
-                else:
-                    current_streak = 1
-            else:
-                current_streak = 1
-            
-            if current_streak > best_streak:
-                best_streak = current_streak
-        else:
-            current_streak = 0
-        
+    while True:
+        response = supabase.table('prediction_results').select(
+            'user_id, poll_id, result_date, accuracy_level'
+        ).gte(
+            'result_date', SCORING_V2_START_DATE
+        ).order(
+            'result_date'
+        ).order(
+            'poll_id'
+        ).range(start, start + page_size - 1).execute()
+        rows = response.data or []
+
+        for row in rows:
+            user_id = row['user_id']
+            state = states.setdefault(user_id, StreakState())
+            state.add_prediction(row['accuracy_level'] == 'exact')
+
+        if len(rows) < page_size:
+            break
+        start += page_size
+
+    return states
+
+
+def sync_user_streaks(states, user_ids, result_date):
+    """Hesaplanan blok serilerini kullanıcı profillerine yansıt."""
+    for user_id in user_ids:
+        state = states.get(user_id, StreakState())
         supabase.table('users').update({
-            'current_streak': current_streak,
-            'best_streak': best_streak,
-            'last_prediction_date': prediction_date.date().isoformat()
+            'current_streak': state.current_streak,
+            'best_streak': state.best_streak,
+            'last_prediction_date': result_date,
         }).eq('id', user_id).execute()
-        
-    except Exception as e:
-        print(f"❌ Update streak error: {e}")
 
 def process_daily_predictions(result_date=None):
     """Hedef işlem gününün kapanmış anketlerini idempotent biçimde puanla."""
@@ -172,6 +113,7 @@ def process_daily_predictions(result_date=None):
         ).not_.is_('user_id', 'null').execute()
         
         votes = votes_response.data if votes_response.data else []
+        votes.sort(key=lambda vote: (vote['user_id'], vote['polls']['id']))
         
         print(f"✅ {len(votes)} tahmin bulundu")
         
@@ -181,10 +123,13 @@ def process_daily_predictions(result_date=None):
         existing_response = supabase.table('prediction_results').select(
             'user_id, poll_id'
         ).eq('result_date', target_date_str).execute()
+        existing_result_rows = existing_response.data or []
         existing_results = {
             (row['user_id'], row['poll_id'])
-            for row in (existing_response.data or [])
+            for row in existing_result_rows
         }
+        users_to_sync = {row['user_id'] for row in existing_result_rows}
+        streak_states = load_streak_states()
 
         vote_distributions = {}
         for vote in votes:
@@ -236,7 +181,8 @@ def process_daily_predictions(result_date=None):
             accuracy_level = calculate_accuracy_level(vote_type, actual_result)
             is_correct = accuracy_level == 'exact'
             
-            current_streak = get_user_streak(user_id)
+            streak_state = streak_states.setdefault(user_id, StreakState())
+            current_streak = streak_state.current_streak
             
             vote_distribution = vote_distributions[poll_id]
             
@@ -245,8 +191,14 @@ def process_daily_predictions(result_date=None):
                 change_percent, current_streak
             )
             
-            difficulty_mult = calculate_difficulty_multiplier(vote_distribution)
-            change_mult = calculate_change_multiplier(change_percent)
+            difficulty_mult = calculate_difficulty_multiplier(
+                vote_distribution,
+                vote_type,
+            )
+            change_mult = calculate_change_multiplier(
+                change_percent,
+                actual_result,
+            )
             streak_mult = calculate_streak_multiplier(current_streak)
             
             supabase.table('prediction_results').insert({
@@ -270,11 +222,18 @@ def process_daily_predictions(result_date=None):
                 'vote_distribution': vote_distribution
             }).execute()
             existing_results.add((user_id, poll_id))
-            
-            update_user_streak(user_id, is_correct, target_date)
+            users_to_sync.add(user_id)
+            streak_state.add_prediction(is_correct)
             
             print(f"✅ {symbol}: {vote_type} vs {actual_result} = {points} pts")
             processed_count += 1
+
+        if users_to_sync:
+            sync_user_streaks(
+                streak_states,
+                users_to_sync,
+                target_date_str,
+            )
         
         if processed_count > 0:
             supabase.rpc('update_user_scores').execute()

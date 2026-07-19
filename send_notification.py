@@ -155,12 +155,11 @@ def notify_streak_warnings():
             voted = supabase.table("votes").select("id").eq("user_id", user["id"]).gte("created_at", f"{today}T00:00:00").execute()
 
             if not voted.data:
-                streak = user.get("current_streak", 0)
                 username = user.get("username", "")
                 success = send_fcm(
                     token,
-                    "Streakini Kaybedeceksin!",
-                    f"{username}, {streak} gunluk seriniz tehlikede! Hemen tahminini yap",
+                    "Tahminlerini Bekliyoruz",
+                    f"{username}, yeni tahminlerinle performans serini guclendir!",
                 )
                 if success:
                     count += 1
