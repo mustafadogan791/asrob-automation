@@ -6,6 +6,7 @@ GitHub Actions tarafından çağrılır.
 Kullanım:
   python send_notification.py --type market_close
   python send_notification.py --type market_open
+  python send_notification.py --type voting_closing
   python send_notification.py --type streak_warning
 """
 
@@ -17,6 +18,13 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 import firebase_admin
 from firebase_admin import credentials, messaging
+from notification_content import (
+    POLL_OPENED_BODY,
+    POLL_OPENED_TITLE,
+    RESULTS_READY_TITLE,
+    VOTING_CLOSING_BODY,
+    VOTING_CLOSING_TITLE,
+)
 
 load_dotenv()
 
@@ -77,8 +85,8 @@ def notify_poll_opened():
     for user in get_users_with_tokens():
         if send_fcm(
             user["fcm_token"],
-            "Yeni Oylama Acildi!",
-            "Yarin icin tahminini yap, Asro Puanini ve serini buyut!",
+            POLL_OPENED_TITLE,
+            POLL_OPENED_BODY,
             {"type": "poll_opened"},
         ):
             sent_count += 1
@@ -108,12 +116,12 @@ def notify_results_ready():
 
         username = user.get("username") or "Kullanici"
         body = (
-            f"{username}, {summary['total']} tahmin sonuclandi: "
+            f"{username}, {summary['total']} tahmin sonuçlandı: "
             f"{summary['exact']} tam isabet, {summary['points']} Asro Puan!"
         )
         if send_fcm(
             user["fcm_token"],
-            "Puanlarin Hazir!",
+            RESULTS_READY_TITLE,
             body,
             {"type": "results_ready", "result_date": today},
         ):
@@ -138,6 +146,20 @@ def notify_market_open():
         ):
             sent_count += 1
     print(f"{sent_count} oylama kapanis bildirimi gonderildi")
+
+
+def notify_voting_closing():
+    print("Oylama kapanis hatirlatmalari gonderiliyor...")
+    sent_count = 0
+    for user in get_users_with_tokens():
+        if send_fcm(
+            user["fcm_token"],
+            VOTING_CLOSING_TITLE,
+            VOTING_CLOSING_BODY,
+            {"type": "voting_closing"},
+        ):
+            sent_count += 1
+    print(f"{sent_count} oylama hatirlatmasi gonderildi")
 
 
 def notify_streak_warnings():
@@ -179,6 +201,7 @@ if __name__ == "__main__":
             "market_open",
             "poll_opened",
             "results_ready",
+            "voting_closing",
             "streak_warning",
         ],
         required=True,
@@ -193,5 +216,7 @@ if __name__ == "__main__":
         notify_poll_opened()
     elif args.type == "results_ready":
         notify_results_ready()
+    elif args.type == "voting_closing":
+        notify_voting_closing()
     elif args.type == "streak_warning":
         notify_streak_warnings()

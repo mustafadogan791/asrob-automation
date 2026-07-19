@@ -2,10 +2,11 @@ name: AsroB Automation
 
 on:
   schedule:
-    # Türkiye saati: hafta içi 09:30, 18:25 ve 18:30 (UTC+3)
-    - cron: '30 6 * * 1-5'
+    # Türkiye saati: hafta içi 09:20, 18:25, 18:30 ve 18:40 (UTC+3)
+    - cron: '20 6 * * 1-5'
     - cron: '25 15 * * 1-5'
     - cron: '30 15 * * 1-5'
+    - cron: '40 15 * * 1-5'
   workflow_dispatch:
     inputs:
       task:
@@ -14,16 +15,17 @@ on:
         default: settlement
         type: choice
         options:
-          - voting_close
+          - voting_warning
           - settlement
           - poll_opening
+          - poll_announcement
 
 jobs:
-  voting_close:
+  voting_warning:
     runs-on: ubuntu-latest
     if: >-
-      github.event.schedule == '30 6 * * 1-5' ||
-      (github.event_name == 'workflow_dispatch' && inputs.task == 'voting_close')
+      github.event.schedule == '20 6 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'voting_warning')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,12 +35,12 @@ jobs:
         run: pip install -r requirements.txt
       - name: Write Firebase credentials
         run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
-      - name: Send voting closed notification
+      - name: Send voting closing reminder
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
-        run: python send_notification.py --type market_open
+        run: python send_notification.py --type voting_closing
 
   settlement:
     runs-on: ubuntu-latest
@@ -88,6 +90,19 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python bist_scraper.py --mode polls
+
+  poll_announcement:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.schedule == '40 15 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'poll_announcement')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
       - name: Write Firebase credentials
         run: echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > firebase-credentials.json
       - name: Send new poll notifications
