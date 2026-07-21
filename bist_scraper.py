@@ -1,8 +1,8 @@
 """
 bist_scraper.py
 GitHub Actions ile her gün 18:30 Türkiye saatinde (15:30 UTC) çalışır.
-BIST hisselerini Bigpara'dan (Yahoo yedekli), endeksleri Yahoo Finance'den
-çekip Supabase'e kaydeder.
+BIST kapanışlarını tam işlem günü doğrulamasıyla Yahoo Finance'den çeker;
+hisselerde Yahoo veri vermezse tarih doğrulamalı Bigpara'yı yedek kullanır.
 """
 
 import argparse
@@ -66,7 +66,7 @@ STOCKS = [
 ]
 
 # ============================================================
-# FİYAT ÇEKME (Bigpara + Yahoo yedeği)
+# FİYAT ÇEKME (Tarih doğrulamalı Yahoo + hisselerde Bigpara yedeği)
 # ============================================================
 
 def fetch_bigpara_quote(symbol: str, target_date: date) -> PriceQuote | None:
@@ -124,13 +124,17 @@ def fetch_yahoo_quote(symbol: str, target_date: date) -> PriceQuote | None:
 
 
 def fetch_price(symbol: str, kind: str, target_date: date) -> PriceQuote | None:
-    """Fetch a date-verified quote, preferring Bigpara for stocks."""
+    """Prefer Yahoo's exact-date close; use dated Bigpara only as stock backup."""
+    yahoo_quote = fetch_yahoo_quote(symbol, target_date)
+    if yahoo_quote is not None:
+        return yahoo_quote
+
     if kind == 'stock':
         bigpara_quote = fetch_bigpara_quote(symbol, target_date)
         if bigpara_quote is not None:
             return bigpara_quote
 
-    return fetch_yahoo_quote(symbol, target_date)
+    return None
 
 # ============================================================
 # POLL OLUŞTURMA (Her gün yeni poll'lar)
