@@ -17,8 +17,13 @@ on:
         options:
           - voting_warning
           - settlement
+          - price_backfill
           - poll_opening
           - poll_announcement
+      backfill_date:
+        description: price_backfill için işlem günü (YYYY-MM-DD)
+        required: false
+        type: string
 
 jobs:
   voting_warning:
@@ -72,6 +77,25 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FIREBASE_CREDENTIALS_PATH: firebase-credentials.json
         run: python send_notification.py --type results_ready
+
+  price_backfill:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.task == 'price_backfill'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Fetch verified closing prices for selected date
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BACKFILL_DATE: ${{ inputs.backfill_date }}
+        run: python bist_scraper.py --mode prices --date "$BACKFILL_DATE"
 
   poll_opening:
     runs-on: ubuntu-latest

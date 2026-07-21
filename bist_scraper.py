@@ -7,13 +7,13 @@ BIST hisselerini Bigpara'dan (Yahoo yedekli), endeksleri Yahoo Finance'den
 
 import argparse
 import os
-from typing import Any
-
+import time
+from datetime import date, datetime, timedelta
 import requests
 import yfinance as yf
-from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from supabase import create_client, Client
+from price_integrity import PriceQuote, extract_bigpara_quotes
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -69,86 +69,68 @@ STOCKS = [
 # FİYAT ÇEKME (Bigpara + Yahoo yedeği)
 # ============================================================
 
-def _to_float(value: Any) -> float | None:
-    """Bigpara'nın sayı/string değerlerini güvenli biçimde float'a çevir."""
-    if isinstance(value, (int, float)):
-        return float(value)
-    if not isinstance(value, str):
-        return None
+def fetch_bigpara_quote(symbol: str, target_date: date) -> PriceQuote | None:
+    """Fetch a Bigpara quote only when its own timestamp matches target_date."""
+    for attempt in range(1, 4):
+        try:
+            response = http.get(
+                BIGPARA_DETAIL_URL.format(symbol=symbol),
+                timeout=HTTP_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            quotes = extract_bigpara_quotes(response.json(), symbol)
+            matching = [quote for quote in quotes if quote.as_of_date == target_date]
+            if matching:
+                quote = matching[0]
+                return PriceQuote(round(quote.price, 4), quote.source, target_date)
 
-    normalized = value.strip().replace(' ', '')
-    if not normalized:
-        return None
-    if ',' in normalized:
-        normalized = normalized.replace('.', '').replace(',', '.')
-
-    try:
-        return float(normalized)
-    except ValueError:
-        return None
-
-
-def _find_bigpara_close(value: Any, symbol: str) -> float | None:
-    """Bigpara yanıtındaki kapanış değerini şema değişikliklerine toleranslı bul."""
-    if isinstance(value, dict):
-        response_symbol = str(value.get('sembol', '')).upper()
-        if not response_symbol or response_symbol == symbol:
-            for key in ('kapanis', 'son', 'fiyat'):
-                price = _to_float(value.get(key))
-                if price is not None and price > 0:
-                    return price
-        for child in value.values():
-            price = _find_bigpara_close(child, symbol)
-            if price is not None:
-                return price
-    elif isinstance(value, list):
-        for child in value:
-            price = _find_bigpara_close(child, symbol)
-            if price is not None:
-                return price
+            dates = sorted({quote.as_of_date.isoformat() for quote in quotes})
+            detail = ', '.join(dates) if dates else 'tarihli fiyat yok'
+            print(
+                f"  ⚠️  {symbol}: Bigpara verisi {target_date} gününe ait değil "
+                f"({detail})"
+            )
+            return None
+        except (requests.RequestException, ValueError) as exc:
+            print(f"  ⚠️  {symbol}: Bigpara deneme {attempt}/3 başarısız ({exc})")
+            if attempt < 3:
+                time.sleep(attempt)
     return None
 
 
-def fetch_bigpara_price(symbol: str) -> float | None:
-    """Bigpara yüzeysel hisse servisinden son/kapanış fiyatını çek."""
-    try:
-        response = http.get(
-            BIGPARA_DETAIL_URL.format(symbol=symbol),
-            timeout=HTTP_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        price = _find_bigpara_close(response.json(), symbol)
-        return round(price, 4) if price is not None else None
-    except (requests.RequestException, ValueError) as exc:
-        print(f"  ⚠️  {symbol}: Bigpara erişilemedi ({exc})")
-        return None
-
-
-def fetch_yahoo_price(symbol: str) -> float | None:
-    """Yahoo Finance'den kapanış fiyatı çek. .IS = Istanbul Stock Exchange."""
+def fetch_yahoo_quote(symbol: str, target_date: date) -> PriceQuote | None:
+    """Fetch the unadjusted Yahoo close for the exact requested trading date."""
     try:
         ticker = yf.Ticker(f"{symbol}.IS")
-        hist = ticker.history(period="2d")
-        if not hist.empty:
-            price = round(float(hist['Close'].iloc[-1]), 2)
-            return price
+        hist = ticker.history(
+            start=target_date.isoformat(),
+            end=(target_date + timedelta(days=1)).isoformat(),
+            auto_adjust=False,
+        )
+        if not hist.empty and 'Close' in hist:
+            row_date = hist.index[-1].date()
+            if row_date != target_date:
+                print(
+                    f"  ⚠️  {symbol}: Yahoo verisi {target_date} yerine "
+                    f"{row_date} gününe ait"
+                )
+                return None
+            price = round(float(hist['Close'].iloc[-1]), 4)
+            return PriceQuote(price, 'yahoo_finance', row_date)
         return None
     except Exception as e:
         print(f"  ⚠️  {symbol}: {e}")
         return None
 
 
-def fetch_price(symbol: str, kind: str) -> tuple[float | None, str | None]:
-    """Hisselerde Bigpara'yı, başarısızsa Yahoo'yu; endekslerde Yahoo'yu kullan."""
+def fetch_price(symbol: str, kind: str, target_date: date) -> PriceQuote | None:
+    """Fetch a date-verified quote, preferring Bigpara for stocks."""
     if kind == 'stock':
-        bigpara_price = fetch_bigpara_price(symbol)
-        if bigpara_price is not None:
-            return bigpara_price, 'bigpara'
+        bigpara_quote = fetch_bigpara_quote(symbol, target_date)
+        if bigpara_quote is not None:
+            return bigpara_quote
 
-    yahoo_price = fetch_yahoo_price(symbol)
-    if yahoo_price is not None:
-        return yahoo_price, 'yahoo_finance'
-    return None, None
+    return fetch_yahoo_quote(symbol, target_date)
 
 # ============================================================
 # POLL OLUŞTURMA (Her gün yeni poll'lar)
@@ -221,6 +203,10 @@ def fetch_and_store_prices(date_str: str):
     print(f"🔄 BIST Kapanış Fiyatları - {date_str}")
     print(f"{'='*60}\n")
 
+    target_date = date.fromisoformat(date_str)
+    if target_date.weekday() >= 5:
+        raise ValueError(f'{date_str} işlem günü değil; fiyat yazılmadı.')
+
     all_symbols = (
         [(symbol, 'benchmark') for symbol in BENCHMARKS]
         + [(symbol, 'stock') for symbol in STOCKS]
@@ -229,16 +215,19 @@ def fetch_and_store_prices(date_str: str):
     fail = 0
 
     for symbol, kind in all_symbols:
-        price, source = fetch_price(symbol, kind)
-        if price:
+        quote = fetch_price(symbol, kind, target_date)
+        if quote is not None:
             supabase.table('daily_prices').upsert({
                 'symbol': symbol,
-                'date': date_str,
-                'close_price': price,
-                'source': source,
+                'date': quote.as_of_date.isoformat(),
+                'close_price': quote.price,
+                'source': quote.source,
             }, on_conflict='symbol,date').execute()
             success += 1
-            print(f"  ✅ {symbol}: {price:.2f} TL")
+            print(
+                f"  ✅ {symbol}: {quote.price:.2f} TL "
+                f"({quote.source}, {quote.as_of_date})"
+            )
         else:
             fail += 1
             print(f"  ❌ {symbol}: Fiyat bulunamadı")
@@ -248,8 +237,12 @@ def fetch_and_store_prices(date_str: str):
         raise RuntimeError('Hiçbir kapanış fiyatı alınamadı; puanlama durduruldu.')
 
 
-def main(mode: str):
-    today = datetime.now(ISTANBUL_TZ).date()
+def main(mode: str, requested_date: str | None = None):
+    today = (
+        date.fromisoformat(requested_date)
+        if requested_date
+        else datetime.now(ISTANBUL_TZ).date()
+    )
     today_str = today.isoformat()
 
     if mode in ('prices', 'all'):
@@ -268,5 +261,9 @@ if __name__ == "__main__":
         default='all',
         help='18:25 prices, 18:30 polls; all yalnızca elle test içindir.',
     )
+    parser.add_argument(
+        '--date',
+        help='Fiyat geri doldurma testi için hedef işlem günü (YYYY-MM-DD).',
+    )
     args = parser.parse_args()
-    main(args.mode)
+    main(args.mode, args.date)

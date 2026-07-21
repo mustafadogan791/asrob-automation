@@ -12,6 +12,7 @@ from scoring_rules import (
     hybrid_points,
     streak_multiplier,
 )
+from price_integrity import same_price_series
 
 # Environment Variables
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -152,7 +153,7 @@ def process_daily_predictions(result_date=None):
                 continue
 
             prev_price_response = supabase.table('daily_prices').select(
-                'close_price, date'
+                'close_price, date, source'
             ).eq(
                 'symbol', symbol
             ).lt(
@@ -162,7 +163,7 @@ def process_daily_predictions(result_date=None):
             ).limit(1).execute()
             
             current_price_response = supabase.table('daily_prices').select(
-                'close_price'
+                'close_price, source'
             ).eq('symbol', symbol).eq('date', target_date_str).limit(1).execute()
 
             if not prev_price_response.data or not current_price_response.data:
@@ -172,6 +173,17 @@ def process_daily_predictions(result_date=None):
 
             previous_price_row = prev_price_response.data[0]
             current_price_row = current_price_response.data[0]
+            if not same_price_series(
+                previous_price_row.get('source'),
+                current_price_row.get('source'),
+            ):
+                print(
+                    f"⚠️ {symbol}: fiyat kaynakları farklı "
+                    f"({previous_price_row.get('source')} -> "
+                    f"{current_price_row.get('source')}); puanlama atlandı"
+                )
+                skipped_count += 1
+                continue
             prediction_date_str = previous_price_row['date']
             prev_price = float(previous_price_row['close_price'])
             current_price = float(current_price_row['close_price'])
