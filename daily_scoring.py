@@ -250,6 +250,15 @@ def process_daily_predictions(result_date=None):
         if processed_count > 0:
             supabase.rpc('update_user_scores').execute()
             supabase.rpc('refresh_stats_and_badges').execute()
+
+        # Duello puanı Asro Puan'dan bağımsızdır. Aynı günün beş rastgele
+        # enstrümanı kapanış fiyatları geldikten sonra sunucuda sonuçlandırılır.
+        duel_result = supabase.rpc(
+            'settle_duels',
+            {'p_poll_date': target_date_str},
+        ).execute()
+        settled_duels = duel_result.data or 0
+        print(f"⚔️ {settled_duels} Duello sonuçlandırıldı")
        
         
         print(f"\n{'='*60}")
