@@ -74,15 +74,23 @@ def send_to_topic(topic: str, title: str, body: str):
 
 def get_users_with_tokens():
     response = supabase.table("users").select(
-        "id, fcm_token, username, current_streak"
+        "id, fcm_token, username, current_streak, notify_poll_opened, "
+        "notify_voting_closing, notify_results_ready, notify_duello"
     ).not_.is_("fcm_token", "null").execute()
     return response.data or []
+
+
+def preference_enabled(user, key):
+    """Existing users remain opted in when a preference is absent."""
+    return user.get(key) is not False
 
 
 def notify_poll_opened():
     print("Yeni anket bildirimleri gonderiliyor...")
     sent_count = 0
     for user in get_users_with_tokens():
+        if not preference_enabled(user, "notify_poll_opened"):
+            continue
         if send_fcm(
             user["fcm_token"],
             POLL_OPENED_TITLE,
@@ -110,6 +118,8 @@ def notify_results_ready():
 
     sent_count = 0
     for user in get_users_with_tokens():
+        if not preference_enabled(user, "notify_results_ready"):
+            continue
         summary = summaries.get(user["id"])
         if not summary:
             continue
@@ -138,6 +148,8 @@ def notify_market_open():
     print("Oylama kapanis bildirimleri gonderiliyor...")
     sent_count = 0
     for user in get_users_with_tokens():
+        if not preference_enabled(user, "notify_voting_closing"):
+            continue
         if send_fcm(
             user["fcm_token"],
             "Oylama Kapandi",
@@ -192,6 +204,29 @@ def notify_streak_warnings():
         print(f"Streak uyari hatasi: {e}")
 
 
+def notify_operations_alert():
+    """Send workflow failures only to the configured operator account."""
+    admin_username = os.getenv("ADMIN_USERNAME", "gilt")
+    body = os.getenv(
+        "ALERT_BODY",
+        "AsroB otomasyonunda hata oluştu. GitHub Actions kaydını kontrol et.",
+    )
+    response = supabase.table("users").select(
+        "fcm_token"
+    ).eq("username", admin_username).not_.is_("fcm_token", "null").limit(1).execute()
+    users = response.data or []
+    if not users:
+        print(f"Operator FCM tokeni bulunamadi: {admin_username}")
+        return
+    if not send_fcm(
+        users[0]["fcm_token"],
+        "AsroB Otomasyon Uyarısı",
+        body,
+        {"type": "operations_alert"},
+    ):
+        raise RuntimeError("Operator bildirimi gonderilemedi")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -203,6 +238,7 @@ if __name__ == "__main__":
             "results_ready",
             "voting_closing",
             "streak_warning",
+            "operations_alert",
         ],
         required=True,
     )
@@ -220,3 +256,5 @@ if __name__ == "__main__":
         notify_voting_closing()
     elif args.type == "streak_warning":
         notify_streak_warnings()
+    elif args.type == "operations_alert":
+        notify_operations_alert()
